@@ -1,0 +1,73 @@
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+
+local localPlayer = Players.LocalPlayer
+
+-- Путь к контейнеру с персонажами игроков
+local playersContainer = Workspace:WaitForChild("Characters"):WaitForChild("Players")
+
+-- Функция для поиска ближайшего персонажа другого игрока
+local function findNearestPlayerCharacter()
+	local myCharacter = localPlayer.Character
+	if not myCharacter or not myCharacter:FindFirstChild("HumanoidRootPart") then
+		return nil
+	end
+
+	local myPosition = myCharacter.HumanoidRootPart.Position
+	local nearestCharacter = nil
+	local minDistance = math.huge
+
+	for _, character in playersContainer:GetChildren() do
+		-- Пропускаем самого себя
+		if character == myCharacter then
+			continue
+		end
+
+		if character:IsA("Model") and character:FindFirstChild("HumanoidRootPart") then
+			local distance = (character.HumanoidRootPart.Position - myPosition).Magnitude
+			if distance < minDistance then -- Исправлено: ищем минимальное расстояние, а не максимальное
+				minDistance = distance
+				nearestCharacter = character
+			end
+		end
+	end
+
+	return nearestCharacter
+end
+
+-- Функция, которая срабатывает при нажатии клавиши
+local function onInputBegan(input, gameProcessedEvent)
+	-- Игнорируем ввод, если он уже обработан игрой (например, при вводе в чат)
+	if gameProcessedEvent then
+		return
+	end
+
+	if input.KeyCode == Enum.KeyCode.T then
+		local targetCharacter = findNearestPlayerCharacter()
+
+		if targetCharacter then
+			local humanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+			if humanoid then
+				print("Найден ближайший игрок: " .. targetCharacter.Name .. ". Устанавливаем атрибут Health на 0.")
+				humanoid:SetAttribute("Health", 0)
+
+				task.wait(3)
+
+				-- Проверяем, существует ли персонаж и его Humanoid после ожидания
+				if targetCharacter and targetCharacter.Parent and targetCharacter:FindFirstChildOfClass("Humanoid") then
+					print("Восстанавливаем атрибут Health для " .. targetCharacter.Name .. " на 100.")
+					humanoid:SetAttribute("Health", 100)
+				else
+					print("Игрок " .. targetCharacter.Name .. " больше не доступен.")
+				end
+			end
+		else
+			print("Другие игроки не найдены.")
+		end
+	end
+end
+
+-- Подключаем функцию к событию нажатия клавиши
+UserInputService.InputBegan:Connect(onInputBegan)
+
