@@ -1,0 +1,451 @@
+--[[
+    Этот локальный скрипт управляет системой эмоций и косметики:
+    1. При запуске настраивает начальное состояние (активирует пассы, управляет RemoteEvents).
+    2. Создает и управляет GUI для выбора эмоций с поиском, которое активируется по клавише 'G'.
+    3. Создает и управляет GUI для выбора косметики с поиском, которое активируется по клавише 'H'.
+    4. Позволяет игроку выбирать и назначать эмоции на 8 слотов.
+    5. Позволяет игроку экипировать аксессуары, ауры и плащи.
+    6. Сохраняет выбор игрока в StringValue в виде JSON-строки.
+]]
+
+-- Сервисы
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+
+-- Локальный игрок
+local LocalPlayer = Players.LocalPlayer
+
+-- Константы для эмоций
+local EMOTES = {
+	Emote = {"Griddy", "Fright Funk","Aurora Miracle","Blizzard","Candy Cane Duel","Candy Cane Walk","Cold World","Gift Exchange","Ice Skating","Snow Angels","Snowball Barrage","Snowball Juggle","Snowball Throw","Snowman","Carry","Sleddies","Cocoa Cheers","Ice Trick","Nutcracker March","Popcorn","Gravedigger","Death Day","Jingle Bell Shake","Cold World","Mic Drop","Spit","T-Pose","Drag","Yawn","Facepalm","Falling Asleep","Sleepy","Calculated","Rambunctious","Sobbing","Sorcerer Stretch","Shadow Boxing","Floss","Relentless Laughing","Phone Call","Rock Paper Scissors","One-Armed Pickup","Stay Down","Push-Ups","Take the L","Fancy Feet","Hakari Dance","Taco Time","Think","Cutthroat","Shoulder Brush","Heartfelt Salute","Boogie Down","Nerd","Npt Like Us","Paparazzi","Frolic","Sad Rain","Kodo Pose","BOO!","Eating Ramen","Come At Me","Sweet Death","Poppin' Bottles","Mog","Lifting","Star of Hope","Santa Sack","Domain Expansion"},
+	KillEmote = {"Vampire", "Surprise!","ACME","Avra Kadoovra","Baldie's Demise","Barbarian","Bee","Blood Sugar","Cauldron","Curb Stomp","Figure Skater","Frost Breath","Frostbound Prison","Frozen Impalement","Gingerbread","Glacial Burial","Goblin Bomb","Heart Rip","Impostor","Laser Eyes","Mistletoe","Naughty List","Neck Snap","Orthax","Pollen Overload","Possession","Rudolph's Revenge","Selfie","Serious Sneeze","Sick Burn","Smite","Snowball Cannon","Snowflakes","Sore Winner","Spine Breaker","Spirit Trap","Think Mark","Tinsel Strangle","Tree Topper Slice","Werewolf","Wrap It Up"}
+}
+local EMOTE_SLOTS = 8
+local TOGGLE_KEY = Enum.KeyCode.G
+
+-- Константы для косметики
+local COSMETICS_TOGGLE_KEY = Enum.KeyCode.H
+local COSMETICS_DATA = {
+	AccessoriesEquipped = {"Chunin Exam Vest", "Halo","Frozen Gloves","Devil's Eye","Devil's Tail","Devil's Wings","Flower Wings","Frozen Crown","Frozen Tail","Frozen Wings","Garland Scarf","Hades Helmet","Holiday Scarf","Krampus Hat","Red Kagune","Rudolph Antlers","Snowflake Wings","Sorting Hat","Sorting Hat","VIP Crown"},
+	AurasEquipped = {"Butterflies", "Northern Lights","Ki","Blue Lightning","Green Lightning","Purple Lightning","Purple Lightning","Yellow Lightning"},
+	CapesEquipped = {"Ice Lord", "Viking","Christmas Lights","Dracula","Krampus","Krampus Supreme","Santa","VIP","Webbed"}
+}
+
+-- Переменные для GUI и данных
+local emoteData = {}
+local emoteGui, emoteWheelFrame, emoteSelectionFrame, cosmeticsFrame
+local currentSlotIndex = nil
+
+-- Начальная настройка при запуске скрипта
+local function initialize()
+    -- 1. Активация всех "пассов"
+    local passesFolder = LocalPlayer:WaitForChild("Passes")
+    if passesFolder then
+        for _, passValue in passesFolder:GetChildren() do
+            if passValue:IsA("BoolValue") then
+                passValue.Value = true
+            elseif passValue:IsA("NumberValue") then
+                passValue.Value = 1 -- "Включить" NumberValue, установив значение 1
+            end
+        end
+    end
+
+    -- 2. Управление RemoteEvents
+    local remotesFolder = ReplicatedStorage:WaitForChild("Remotes")
+    local combatFolder = remotesFolder:WaitForChild("Combat")
+
+    if combatFolder then
+        local emoteStop = combatFolder:FindFirstChild("EmoteStop")
+        if emoteStop then
+            emoteStop:Destroy()
+        end
+
+        task.wait(1)
+
+        local emoteStart = combatFolder:FindFirstChild("EmoteStart")
+        if emoteStart then
+            local newEmoteStop = emoteStart:Clone()
+            newEmoteStop.Name = "EmoteStop"
+            newEmoteStop.Parent = combatFolder
+        end
+    end
+end
+
+-- Создание таблицы с данными по умолчанию
+local function createDefaultEmoteData()
+    local data = {}
+    -- 8 слотов для эмоций
+    for i = 1, EMOTE_SLOTS do
+        table.insert(data, {"Emote", "None"})
+    end
+    -- 4 булевых флага
+    for i = 1, 4 do
+        table.insert(data, true)
+    end
+    return data
+end
+
+-- Обновление StringValue новыми данными об эмоциях
+local function updateEmoteValue()
+    local dataFolder = LocalPlayer:WaitForChild("Data")
+    local equippedValue = dataFolder:FindFirstChild("EmoteEquipped")
+    
+    if equippedValue and equippedValue:IsA("StringValue") then
+        local success, encodedData = pcall(function()
+            return HttpService:JSONEncode(emoteData)
+        end)
+        if success then
+            equippedValue.Value = encodedData
+        else
+            warn("Failed to encode emote data to JSON.")
+        end
+    else
+        warn("EmoteEquipped StringValue not found in Player.Data")
+    end
+end
+
+-- Обновление StringValue для общих данных (косметика и т.д.)
+local function updateDataValue(valueName, dataTable)
+    local dataFolder = LocalPlayer:WaitForChild("Data")
+    local valueObject = dataFolder:FindFirstChild(valueName)
+
+    if not valueObject or not valueObject:IsA("StringValue") then
+        warn(valueName .. " is not a StringValue or does not exist. Creating a new one.")
+        if valueObject then valueObject:Destroy() end
+        valueObject = Instance.new("StringValue")
+        valueObject.Name = valueName
+        valueObject.Parent = dataFolder
+    end
+
+    local success, encodedData = pcall(function()
+        return HttpService:JSONEncode(dataTable)
+    end)
+
+    if success then
+        valueObject.Value = encodedData
+    else
+        warn("Failed to encode " .. valueName .. " data to JSON.")
+    end
+end
+
+-- Загрузка данных об эмоциях из StringValue
+local function loadEmoteData()
+    local dataFolder = LocalPlayer:WaitForChild("Data")
+    local equippedValue = dataFolder:WaitForChild("EmoteEquipped")
+
+    if not equippedValue or not equippedValue:IsA("StringValue") then
+        warn("EmoteEquipped is not a StringValue or does not exist. Creating a new one.")
+        if equippedValue then equippedValue:Destroy() end
+        equippedValue = Instance.new("StringValue")
+        equippedValue.Name = "EmoteEquipped"
+        equippedValue.Parent = dataFolder
+        emoteData = createDefaultEmoteData()
+        updateEmoteValue()
+        return
+    end
+
+    local success, decodedData = pcall(function()
+        if equippedValue.Value == "" then return nil end
+        return HttpService:JSONDecode(equippedValue.Value)
+    end)
+
+    if success and typeof(decodedData) == "table" and #decodedData == (EMOTE_SLOTS + 4) then
+        emoteData = decodedData
+    else
+        emoteData = createDefaultEmoteData()
+        updateEmoteValue()
+    end
+end
+
+-- Создание элементов GUI для эмоций
+local function createUI()
+    emoteGui = Instance.new("ScreenGui")
+    emoteGui.Name = "EmoteGUI"
+    emoteGui.ResetOnSpawn = false
+    emoteGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+    emoteWheelFrame = Instance.new("Frame")
+    emoteWheelFrame.Name = "EmoteWheel"
+    emoteWheelFrame.Size = UDim2.new(0, 300, 0, 300)
+    emoteWheelFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+    emoteWheelFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+    emoteWheelFrame.BackgroundTransparency = 1
+    emoteWheelFrame.Visible = false
+    emoteWheelFrame.Parent = emoteGui
+
+    -- Рамка для списка выбора эмоций
+    emoteSelectionFrame = Instance.new("ScrollingFrame")
+    emoteSelectionFrame.Name = "EmoteSelection"
+    emoteSelectionFrame.Size = UDim2.new(0, 300, 0, 400)
+    emoteSelectionFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+    emoteSelectionFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+    emoteSelectionFrame.BackgroundTransparency = 0.2
+    emoteSelectionFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    emoteSelectionFrame.BorderSizePixel = 0
+    emoteSelectionFrame.Visible = false
+    emoteSelectionFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y -- Увеличение лимита прокрутки
+    emoteSelectionFrame.Parent = emoteGui
+
+    local listLayout = Instance.new("UIListLayout")
+    listLayout.Padding = UDim.new(0, 5)
+    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    listLayout.Parent = emoteSelectionFrame
+
+    -- Функция фильтрации списка эмоций
+    local function filterEmoteList(searchText)
+        local lowerSearchText = searchText:lower()
+        local visibleCategories = {}
+
+        -- Фильтруем кнопки эмоций
+        for _, child in emoteSelectionFrame:GetChildren() do
+            if child:IsA("TextButton") and child.Name ~= "BackButton" then
+                local isVisible = child.Name:lower():find(lowerSearchText, 1, true)
+                child.Visible = isVisible
+                if isVisible then
+                    local category = child:GetAttribute("Category")
+                    if category then
+                        visibleCategories[category] = true
+                    end
+                end
+            end
+        end
+
+        -- Показываем/скрываем заголовки категорий
+        for _, child in emoteSelectionFrame:GetChildren() do
+            if child:IsA("TextLabel") then
+                child.Visible = visibleCategories[child.Text] or false
+            end
+        end
+    end
+
+    -- Строка поиска
+    local searchBar = Instance.new("TextBox")
+    searchBar.Name = "SearchBar"
+    searchBar.Size = UDim2.new(1, -10, 0, 30)
+    searchBar.Position = UDim2.new(0.5, 0, 0, 0)
+    searchBar.AnchorPoint = Vector2.new(0.5, 0)
+    searchBar.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    searchBar.TextColor3 = Color3.fromRGB(255, 255, 255)
+    searchBar.PlaceholderText = "Search Emotes..."
+    searchBar.ClearTextOnFocus = false
+    searchBar.Font = Enum.Font.SourceSans
+    searchBar.TextSize = 16
+    searchBar.LayoutOrder = 0 -- Поместить вверху
+    searchBar.Parent = emoteSelectionFrame
+
+    searchBar:GetPropertyChangedSignal("Text"):Connect(function()
+        filterEmoteList(searchBar.Text)
+    end)
+
+    -- Заполнение списка эмоций
+    local layoutOrder = 1
+    for category, emotes in EMOTES do
+        local categoryLabel = Instance.new("TextLabel")
+        categoryLabel.Name = category .. "Label"
+        categoryLabel.Size = UDim2.new(1, 0, 0, 30)
+        categoryLabel.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        categoryLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        categoryLabel.Text = category
+        categoryLabel.Font = Enum.Font.SourceSansBold
+        categoryLabel.TextSize = 20
+        categoryLabel.LayoutOrder = layoutOrder
+        categoryLabel.Parent = emoteSelectionFrame
+        layoutOrder = layoutOrder + 1
+
+        for _, emoteName in emotes do
+            local emoteButton = Instance.new("TextButton")
+            emoteButton.Name = emoteName
+            emoteButton.Size = UDim2.new(1, 0, 0, 40)
+            emoteButton.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+            emoteButton.TextColor3 = Color3.fromRGB(220, 220, 220)
+            emoteButton.Text = emoteName
+            emoteButton.Font = Enum.Font.SourceSans
+            emoteButton.TextSize = 18
+            emoteButton.LayoutOrder = layoutOrder
+            emoteButton:SetAttribute("Category", category) -- Добавляем атрибут для фильтрации
+            emoteButton.Parent = emoteSelectionFrame
+            layoutOrder = layoutOrder + 1
+
+            emoteButton.MouseButton1Click:Connect(function()
+                if currentSlotIndex then
+                    emoteData[currentSlotIndex] = {category, emoteName}
+                    updateEmoteValue()
+                    emoteSelectionFrame.Visible = false
+                    currentSlotIndex = nil
+                end
+            end)
+        end
+    end
+    
+    -- Создание 8 кнопок-слотов по кругу
+    local radius = 120
+    for i = 1, EMOTE_SLOTS do
+        local angle = ((i - 1) / EMOTE_SLOTS) * 2 * math.pi - (math.pi / 2)
+        local x = math.cos(angle) * radius
+        local y = math.sin(angle) * radius
+
+        local slotButton = Instance.new("TextButton")
+        slotButton.Name = "Slot_" .. i
+        slotButton.Size = UDim2.new(0, 50, 0, 50)
+        slotButton.Position = UDim2.new(0.5, x, 0.5, y)
+        slotButton.AnchorPoint = Vector2.new(0.5, 0.5)
+        slotButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        slotButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        slotButton.Text = tostring(i)
+        slotButton.Font = Enum.Font.SourceSansBold
+        slotButton.TextSize = 24
+        slotButton.Parent = emoteWheelFrame
+
+        slotButton.MouseButton1Click:Connect(function()
+            currentSlotIndex = i
+            emoteWheelFrame.Visible = false
+            emoteSelectionFrame.Visible = true
+            -- Сброс поиска при открытии
+            searchBar.Text = ""
+            filterEmoteList("")
+        end)
+    end
+
+    emoteGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- Общая функция фильтрации для списков косметики
+local function filterList(scrollingFrame, searchText)
+    local lowerSearchText = searchText:lower()
+    for _, button in scrollingFrame:GetChildren() do
+        if button:IsA("TextButton") then
+            button.Visible = button.Name:lower():find(lowerSearchText, 1, true)
+        end
+    end
+end
+
+-- Создание GUI для выбора косметики
+local function createCosmeticsUI()
+    cosmeticsFrame = Instance.new("Frame")
+    cosmeticsFrame.Name = "CosmeticsSelection"
+    cosmeticsFrame.Size = UDim2.new(0, 600, 0, 450) -- Увеличено для поисковых строк
+    cosmeticsFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+    cosmeticsFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+    cosmeticsFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    cosmeticsFrame.BorderSizePixel = 1
+    cosmeticsFrame.BorderColor3 = Color3.fromRGB(100, 100, 100)
+    cosmeticsFrame.Visible = false
+    cosmeticsFrame.Parent = emoteGui
+
+    local horizontalLayout = Instance.new("UIListLayout")
+    horizontalLayout.FillDirection = Enum.FillDirection.Horizontal
+    horizontalLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    horizontalLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    horizontalLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    horizontalLayout.Padding = UDim.new(0, 10)
+    horizontalLayout.Parent = cosmeticsFrame
+
+    local columnIndex = 1
+    for valueName, items in COSMETICS_DATA do
+        local columnFrame = Instance.new("Frame")
+        columnFrame.Name = valueName .. "Column"
+        columnFrame.Size = UDim2.new(0, 180, 1, 0)
+        columnFrame.BackgroundTransparency = 1
+        columnFrame.LayoutOrder = columnIndex
+        columnFrame.Parent = cosmeticsFrame
+
+        local columnLayout = Instance.new("UIListLayout")
+        columnLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        columnLayout.Padding = UDim.new(0, 5)
+        columnLayout.Parent = columnFrame
+
+        local titleLabel = Instance.new("TextLabel")
+        titleLabel.Name = "Title"
+        titleLabel.Size = UDim2.new(1, 0, 0, 30)
+        titleLabel.Text = valueName:gsub("Equipped", "")
+        titleLabel.Font = Enum.Font.SourceSansBold
+        titleLabel.TextSize = 20
+        titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        titleLabel.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        titleLabel.Parent = columnFrame
+
+        local searchBar = Instance.new("TextBox")
+        searchBar.Name = "SearchBar"
+        searchBar.Size = UDim2.new(1, 0, 0, 25)
+        searchBar.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        searchBar.TextColor3 = Color3.fromRGB(255, 255, 255)
+        searchBar.PlaceholderText = "Search..."
+        searchBar.ClearTextOnFocus = false
+        searchBar.Font = Enum.Font.SourceSans
+        searchBar.TextSize = 14
+        searchBar.Parent = columnFrame
+
+        local scrollingFrame = Instance.new("ScrollingFrame")
+        scrollingFrame.Name = "ItemList"
+        scrollingFrame.Size = UDim2.new(1, 0, 1, -60) -- Место для заголовка и поиска
+        scrollingFrame.BackgroundTransparency = 0.5
+        scrollingFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+        scrollingFrame.BorderSizePixel = 0
+        scrollingFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y -- Увеличение лимита
+        scrollingFrame.Parent = columnFrame
+
+        searchBar:GetPropertyChangedSignal("Text"):Connect(function()
+            filterList(scrollingFrame, searchBar.Text)
+        end)
+
+        local listLayout = Instance.new("UIListLayout")
+        listLayout.Padding = UDim.new(0, 5)
+        listLayout.Parent = scrollingFrame
+
+        for _, itemName in items do
+            local itemButton = Instance.new("TextButton")
+            itemButton.Name = itemName
+            itemButton.Size = UDim2.new(1, 0, 0, 40)
+            itemButton.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+            itemButton.TextColor3 = Color3.fromRGB(220, 220, 220)
+            itemButton.Text = itemName
+            itemButton.Font = Enum.Font.SourceSans
+            itemButton.TextSize = 16
+            itemButton.Parent = scrollingFrame
+
+            itemButton.MouseButton1Click:Connect(function()
+                local dataToSave = {itemName}
+                updateDataValue(valueName, dataToSave)
+                print(valueName .. " set to: " .. itemName)
+            end)
+        end
+        columnIndex = columnIndex + 1
+    end
+end
+
+-- Обработка нажатия клавиши
+local function onInputBegan(input, gameProcessed)
+    if gameProcessed then return end
+
+    if input.KeyCode == TOGGLE_KEY then
+        emoteWheelFrame.Visible = not emoteWheelFrame.Visible
+        if not emoteWheelFrame.Visible then
+            emoteSelectionFrame.Visible = false
+        end
+    elseif input.KeyCode == COSMETICS_TOGGLE_KEY then
+        local willBeVisible = not cosmeticsFrame.Visible
+        cosmeticsFrame.Visible = willBeVisible
+
+        -- Сброс поиска при открытии меню косметики
+        if willBeVisible then
+            for _, columnFrame in cosmeticsFrame:GetChildren() do
+                if columnFrame:IsA("Frame") and columnFrame:FindFirstChild("SearchBar") then
+                    local searchBar = columnFrame.SearchBar
+                    local itemList = columnFrame.ItemList
+                    searchBar.Text = ""
+                    filterList(itemList, "")
+                end
+            end
+        end
+    end
+end
+
+-- Запуск
+initialize()
+loadEmoteData()
+createUI()
+createCosmeticsUI()
+UserInputService.InputBegan:Connect(onInputBegan)
+
